@@ -1,3 +1,4 @@
+// internal/cache/item.go	数据单元
 package cache
 
 import "time"

@@ -1,3 +1,4 @@
+// internal/cache/store.go	存储接口
 package cache
 
 import "time"

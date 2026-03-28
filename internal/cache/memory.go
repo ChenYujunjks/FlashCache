@@ -1,3 +1,4 @@
+// internal/cache/memory.go	内存存储实现
 package cache
 
 import (
