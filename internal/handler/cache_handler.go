@@ -10,7 +10,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type CacheHandler struct {
+// Handler 不直接操作 cache.Store，也不直接碰 map。
+// Handler 只调用 CacheService。
+type CacheHandler struct { //Handler 持有 Service Service 持有 Store
 	cacheService *service.CacheService
 }
 
