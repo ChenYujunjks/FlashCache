@@ -18,6 +18,7 @@ func NewInMemoryStore() *InMemoryStore {
 }
 
 func (s *InMemoryStore) Set(key string, value string, ttl time.Duration) error {
+	//所有访问 items 的代码，都约定先拿 mu 这把锁。
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
