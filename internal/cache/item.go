@@ -5,6 +5,6 @@ import "time"
 
 type Item struct {
 	Value     string
-	ExpiresAt time.Time
-	HasExpiry bool
+	ExpiresAt time.Time //零值 time.Time{}
+	HasExpiry bool      //零值 false
 }

@@ -7,7 +7,7 @@ import (
 )
 
 type InMemoryStore struct {
-	mu              sync.RWMutex
+	mu              sync.RWMutex // 可以直接自定义
 	items           map[string]Item
 	cleanupInterval time.Duration
 	stopCh          chan struct{}
@@ -99,6 +99,7 @@ func (s *InMemoryStore) deleteExpiredItems() {
 	for key, item := range s.items {
 		if item.HasExpiry && now.After(item.ExpiresAt) {
 			delete(s.items, key)
+			println("cleanup tick executed")
 		}
 	}
 }
