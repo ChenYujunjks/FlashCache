@@ -7,17 +7,28 @@ import (
 )
 
 type InMemoryStore struct {
-	mu    sync.RWMutex
-	items map[string]Item
+	mu              sync.RWMutex // 可以直接自定义
+	items           map[string]Item
+	cleanupInterval time.Duration
+	stopCh          chan struct{}
 }
 
-func NewInMemoryStore() *InMemoryStore {
-	return &InMemoryStore{
-		items: make(map[string]Item),
+func NewInMemoryStore(cleanupInterval time.Duration) *InMemoryStore {
+	store := &InMemoryStore{
+		items:           make(map[string]Item),
+		cleanupInterval: cleanupInterval,
+		stopCh:          make(chan struct{}),
 	}
+
+	if cleanupInterval > 0 {
+		go store.startCleanup()
+	}
+
+	return store
 }
 
 func (s *InMemoryStore) Set(key string, value string, ttl time.Duration) error {
+	//所有访问 items 的代码，都约定先拿 mu 这把锁。
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -63,4 +74,36 @@ func (s *InMemoryStore) Delete(key string) bool {
 
 	delete(s.items, key)
 	return true
+}
+
+func (s *InMemoryStore) startCleanup() {
+	ticker := time.NewTicker(s.cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.deleteExpiredItems()
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+func (s *InMemoryStore) deleteExpiredItems() {
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for key, item := range s.items {
+		if item.HasExpiry && now.After(item.ExpiresAt) {
+			delete(s.items, key)
+			println("cleanup tick executed")
+		}
+	}
+}
+
+func (s *InMemoryStore) Stop() {
+	close(s.stopCh)
 }

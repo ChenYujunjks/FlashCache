@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/ChenYujunjks/FlashCache/internal/cache"
 	"github.com/ChenYujunjks/FlashCache/internal/handler"
@@ -11,7 +12,8 @@ import (
 )
 
 func main() {
-	store := cache.NewInMemoryStore()
+	store := cache.NewInMemoryStore(5 * time.Second)
+	defer store.Stop() //Graceful Shutdown（优雅关闭）
 	cacheService := service.NewCacheService(store)
 	cacheHandler := handler.NewCacheHandler(cacheService)
 
