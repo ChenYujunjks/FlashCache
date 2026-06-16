@@ -2,6 +2,7 @@
 package cache
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -99,7 +100,7 @@ func (s *InMemoryStore) deleteExpiredItems() {
 	for key, item := range s.items {
 		if item.HasExpiry && now.After(item.ExpiresAt) {
 			delete(s.items, key)
-			println("cleanup tick executed")
+			fmt.Println("deleted expired key:", key, "!!!!!")
 		}
 	}
 }
