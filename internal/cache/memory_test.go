@@ -1,6 +1,8 @@
 package cache
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -53,18 +55,109 @@ func TestTTLExpirationOnGet(t *testing.T) {
 }
 
 func TestBackgroundCleanup(t *testing.T) {
-	store := NewInMemoryStore(50 * time.Millisecond)
+	store := NewInMemoryStore(10 * time.Millisecond)
 	defer store.Stop()
 
-	_ = store.Set("temp", "value", 50*time.Millisecond)
+	const key = "temp"
+	_ = store.Set(key, "value", 20*time.Millisecond)
 
-	time.Sleep(200 * time.Millisecond)
-
-	store.mu.RLock()
-	_, exists := store.items["temp"]
-	store.mu.RUnlock()
-
-	if exists {
+	if !waitUntil(500*time.Millisecond, func() bool { return !itemExists(store, key) }) {
 		t.Fatal("expected expired key to be removed by background cleanup")
 	}
+}
+
+func TestNewInMemoryStoreWithShards(t *testing.T) {
+	store := NewInMemoryStoreWithShards(4, 0)
+
+	if store.shardCount != 4 {
+		t.Fatalf("expected 4 shards, got %d", store.shardCount)
+	}
+	if len(store.shards) != 4 {
+		t.Fatalf("expected 4 initialized shards, got %d", len(store.shards))
+	}
+	for i, sh := range store.shards {
+		if sh == nil || sh.items == nil {
+			t.Fatalf("expected shard %d to be initialized", i)
+		}
+	}
+}
+
+func TestMultipleKeysAcrossShards(t *testing.T) {
+	store := NewInMemoryStoreWithShards(16, 0)
+	values := make(map[string]string)
+	usedShards := make(map[*shard]struct{})
+
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("key-%d", i)
+		value := fmt.Sprintf("value-%d", i)
+		values[key] = value
+		usedShards[store.getShard(key)] = struct{}{}
+		if err := store.Set(key, value, 0); err != nil {
+			t.Fatalf("set %q: %v", key, err)
+		}
+	}
+
+	if len(usedShards) < 2 {
+		t.Fatal("expected test keys to be distributed across multiple shards")
+	}
+	for key, want := range values {
+		got, ok := store.Get(key)
+		if !ok || got != want {
+			t.Fatalf("get %q: got (%q, %t), want (%q, true)", key, got, ok, want)
+		}
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	store := NewInMemoryStoreWithShards(16, 0)
+
+	const workers = 100
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("key-%d", i)
+			value := fmt.Sprintf("value-%d", i)
+
+			if err := store.Set(key, value, 0); err != nil {
+				t.Errorf("set %q: %v", key, err)
+				return
+			}
+			if got, ok := store.Get(key); !ok || got != value {
+				t.Errorf("get %q: got (%q, %t), want (%q, true)", key, got, ok, value)
+				return
+			}
+			if !store.Delete(key) {
+				t.Errorf("delete %q: expected true", key)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < workers; i++ {
+		key := fmt.Sprintf("key-%d", i)
+		if _, ok := store.Get(key); ok {
+			t.Fatalf("expected %q to be deleted", key)
+		}
+	}
+}
+
+func itemExists(store *InMemoryStore, key string) bool {
+	sh := store.getShard(key)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	_, exists := sh.items[key]
+	return exists
+}
+
+func waitUntil(timeout time.Duration, condition func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return condition()
 }
