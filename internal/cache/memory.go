@@ -1,24 +1,45 @@
-// internal/cache/memory.go	内存存储实现
 package cache
 
 import (
-	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
 )
 
+const defaultShardCount = 16
+
+type shard struct {
+	mu    sync.RWMutex
+	items map[string]Item
+}
+
 type InMemoryStore struct {
-	mu              sync.RWMutex // 可以直接自定义
-	items           map[string]Item
+	shards          []*shard
+	shardCount      uint32
 	cleanupInterval time.Duration
 	stopCh          chan struct{}
 }
 
 func NewInMemoryStore(cleanupInterval time.Duration) *InMemoryStore {
+	return NewInMemoryStoreWithShards(defaultShardCount, cleanupInterval)
+}
+
+func NewInMemoryStoreWithShards(shardCount int, cleanupInterval time.Duration) *InMemoryStore {
+	if shardCount <= 0 {
+		shardCount = defaultShardCount
+	}
+
 	store := &InMemoryStore{
-		items:           make(map[string]Item),
+		shards:          make([]*shard, shardCount),
+		shardCount:      uint32(shardCount),
 		cleanupInterval: cleanupInterval,
 		stopCh:          make(chan struct{}),
+	}
+
+	for i := 0; i < shardCount; i++ {
+		store.shards[i] = &shard{
+			items: make(map[string]Item),
+		}
 	}
 
 	if cleanupInterval > 0 {
@@ -29,9 +50,10 @@ func NewInMemoryStore(cleanupInterval time.Duration) *InMemoryStore {
 }
 
 func (s *InMemoryStore) Set(key string, value string, ttl time.Duration) error {
-	//所有访问 items 的代码，都约定先拿 mu 这把锁。
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.getShard(key)
+
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 
 	item := Item{
 		Value: value,
@@ -42,23 +64,25 @@ func (s *InMemoryStore) Set(key string, value string, ttl time.Duration) error {
 		item.ExpiresAt = time.Now().Add(ttl)
 	}
 
-	s.items[key] = item
+	sh.items[key] = item
 	return nil
 }
 
 func (s *InMemoryStore) Get(key string) (string, bool) {
-	s.mu.RLock()
-	item, ok := s.items[key]
-	s.mu.RUnlock()
+	sh := s.getShard(key)
+
+	sh.mu.RLock()
+	item, ok := sh.items[key]
+	sh.mu.RUnlock()
 
 	if !ok {
 		return "", false
 	}
 
 	if item.HasExpiry && time.Now().After(item.ExpiresAt) {
-		s.mu.Lock()
-		delete(s.items, key)
-		s.mu.Unlock()
+		sh.mu.Lock()
+		delete(sh.items, key)
+		sh.mu.Unlock()
 		return "", false
 	}
 
@@ -66,15 +90,24 @@ func (s *InMemoryStore) Get(key string) (string, bool) {
 }
 
 func (s *InMemoryStore) Delete(key string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.getShard(key)
 
-	if _, ok := s.items[key]; !ok {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	if _, ok := sh.items[key]; !ok {
 		return false
 	}
 
-	delete(s.items, key)
+	delete(sh.items, key)
 	return true
+}
+
+func (s *InMemoryStore) getShard(key string) *shard {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(key))
+	index := hash.Sum32() % s.shardCount
+	return s.shards[index]
 }
 
 func (s *InMemoryStore) startCleanup() {
@@ -94,14 +127,16 @@ func (s *InMemoryStore) startCleanup() {
 func (s *InMemoryStore) deleteExpiredItems() {
 	now := time.Now()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	for _, sh := range s.shards {
+		sh.mu.Lock()
 
-	for key, item := range s.items {
-		if item.HasExpiry && now.After(item.ExpiresAt) {
-			delete(s.items, key)
-			fmt.Println("deleted expired key:", key, "!!!!!")
+		for key, item := range sh.items {
+			if item.HasExpiry && now.After(item.ExpiresAt) {
+				delete(sh.items, key)
+			}
 		}
+
+		sh.mu.Unlock()
 	}
 }
 
